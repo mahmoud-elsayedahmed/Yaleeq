@@ -4,12 +4,47 @@ import logging
 from typing import List, Optional
 
 import numpy as np
-from fashn_human_parser import BODY_COVERAGE_TO_LABELS, IDENTITY_LABELS, LABELS_TO_IDS
-
 from ..utils import setup_logger
 from .masks import asymmetric_dilate_mask, create_bounded_mask, create_contour_following_mask, dilate_mask
 
-# Re-export constants from fashn_human_parser for convenience
+# ── Constants (originally from fashn_human_parser, inlined to remove dependency) ──
+
+LABELS_TO_IDS = {
+    "background": 0,
+    "face": 1,
+    "hair": 2,
+    "top": 3,
+    "dress": 4,
+    "skirt": 5,
+    "pants": 6,
+    "belt": 7,
+    "bag": 8,
+    "hat": 9,
+    "scarf": 10,
+    "glasses": 11,
+    "arms": 12,
+    "hands": 13,
+    "legs": 14,
+    "feet": 15,
+    "torso": 16,
+    "jewelry": 17,
+}
+
+BODY_COVERAGE_TO_LABELS = {
+    "upper": ("top", "dress", "scarf"),
+    "lower": ("skirt", "pants", "belt"),
+    "full": ("top", "dress", "scarf", "skirt", "pants", "belt"),
+}
+
+IDENTITY_LABELS = ("face", "hair", "jewelry", "bag", "glasses", "hat")
+
+CATEGORY_TO_BODY_COVERAGE = {
+    "tops": "upper",
+    "bottoms": "lower",
+    "one-pieces": "full",
+}
+
+# Aliases used by the rest of the codebase
 FASHN_LABELS_TO_IDS = LABELS_TO_IDS
 BODY_COVERAGE_TO_FASHN_LABELS = BODY_COVERAGE_TO_LABELS
 IDENTITY_FASHN_LABELS = tuple(IDENTITY_LABELS)

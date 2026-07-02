@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-"""
-Download all model weights required for FASHN VTON.
+"""Download all model weights required for FASHN VTON.
 
 Usage:
     python scripts/download_weights.py --weights-dir ./weights
@@ -8,7 +6,7 @@ Usage:
 This will download:
     - TryOnModel weights (model.safetensors) from HuggingFace
     - DWPose ONNX models (yolox_l.onnx, dw-ll_ucoco_384.onnx)
-    - FashnHumanParser weights (auto-cached by HuggingFace)
+    - Cloth segmentation U2NET weights (cloth_segm_u2net_latest.pth)
 """
 
 import argparse
@@ -49,14 +47,26 @@ def download_dwpose_models(weights_dir: str) -> str:
     return dwpose_dir
 
 
-def download_human_parser() -> None:
-    """Initialize FashnHumanParser to trigger weight download."""
-    print("Downloading FashnHumanParser weights...")
-    from fashn_human_parser import FashnHumanParser
+def download_cloth_segmentation(weights_dir: str) -> str:
+    """Download cloth segmentation U2NET weights from HuggingFace."""
+    cloth_seg_dir = os.path.join(weights_dir, "cloth_seg")
+    os.makedirs(cloth_seg_dir, exist_ok=True)
 
-    # This will auto-download weights to HuggingFace cache if not present
-    _ = FashnHumanParser(device="cpu")
-    print("  Cached in HuggingFace hub cache")
+    output_path = os.path.join(cloth_seg_dir, "cloth_segm_u2net_latest.pth")
+
+    if os.path.exists(output_path):
+        print(f"  Already exists: {output_path}")
+        return output_path
+
+    print("Downloading cloth segmentation (U2NET) weights...")
+    path = hf_hub_download(
+        repo_id="maiti/cloth-segmentation",
+        filename="cloth_segm_u2net_latest.pth",
+        local_dir=cloth_seg_dir,
+    )
+    print(f"  Saved to: {path}")
+    return path
+
 
 
 def main():
@@ -90,7 +100,7 @@ After downloading, use the pipeline:
     print()
     download_dwpose_models(weights_dir)
     print()
-    download_human_parser()
+    download_cloth_segmentation(weights_dir)
 
     print(f"""
 Download complete!
@@ -98,9 +108,11 @@ Download complete!
 Weights directory structure:
     {weights_dir}/
     ├── model.safetensors
-    └── dwpose/
-        ├── yolox_l.onnx
-        └── dw-ll_ucoco_384.onnx
+    ├── dwpose/
+    │   ├── yolox_l.onnx
+    │   └── dw-ll_ucoco_384.onnx
+    └── cloth_seg/
+        └── cloth_segm_u2net_latest.pth
 
 Usage:
     from fashn_vton import TryOnPipeline

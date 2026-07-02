@@ -100,7 +100,11 @@ uv.lock
 *.jpg
 *.jpeg
 *.gif
-*.webp
 *.bmp
 *.tiff
 *.tif
+
+# Personal / temp files
+plan.txt
+cloth_segmentation_summary.md
+*.md.bak

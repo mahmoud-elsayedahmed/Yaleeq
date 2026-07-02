@@ -3,6 +3,8 @@
 Debug script to visualize mask creation in the preprocessing pipeline.
 
 Saves intermediate masks and images to debug_outputs/ directory.
+
+Uses the ClothSegmenter (U2NET) model for cloth segmentation.
 """
 
 import argparse
@@ -16,9 +18,8 @@ from PIL import Image
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from fashn_human_parser import CATEGORY_TO_BODY_COVERAGE, FashnHumanParser
-
-from fashn_vton.preprocessing import BODY_COVERAGE_TO_FASHN_LABELS, FASHN_LABELS_TO_IDS
+from fashn_vton.cloth_segmentation import ClothSegmenter
+from fashn_vton.preprocessing import BODY_COVERAGE_TO_FASHN_LABELS, CATEGORY_TO_BODY_COVERAGE, FASHN_LABELS_TO_IDS
 from fashn_vton.preprocessing.masks import (
     asymmetric_dilate_mask,
     create_bounded_mask,
@@ -288,15 +289,21 @@ Example:
     save_image(person_np, output_dir, "00_person_original")
     save_image(garment_np, output_dir, "00_garment_original")
 
-    # Load human parser
-    print("\nLoading FashnHumanParser...")
-    hp_model = FashnHumanParser(device="cpu")
+    # Load cloth segmenter
+    cloth_seg_path = os.path.join(repo_dir, "weights", "cloth_seg", "cloth_segm_u2net_latest.pth")
+    if not os.path.exists(cloth_seg_path):
+        print(f"\nError: Cloth segmentation weights not found at: {cloth_seg_path}")
+        print("Please run: python scripts/download_weights.py --weights-dir ./weights")
+        sys.exit(1)
+
+    print("\nLoading ClothSegmenter (U2NET)...")
+    segmenter = ClothSegmenter(checkpoint_path=cloth_seg_path, device="cpu")
 
     # Run segmentation
-    print("Running human parsing on person image...")
-    person_seg = hp_model.predict(person_np)
-    print("Running human parsing on garment image...")
-    garment_seg = hp_model.predict(garment_np)
+    print("Running cloth segmentation on person image...")
+    person_seg = segmenter.predict(person_np)
+    print("Running cloth segmentation on garment image...")
+    garment_seg = segmenter.predict(garment_np)
 
     # Save colorized segmentations
     save_image(colorize_segmentation(person_seg), output_dir, "00_person_segmentation")

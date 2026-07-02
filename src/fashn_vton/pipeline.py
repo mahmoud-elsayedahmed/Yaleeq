@@ -8,13 +8,15 @@ from typing import List, Literal, Optional
 import cv2
 import numpy as np
 import torch
-from fashn_human_parser import CATEGORY_TO_BODY_COVERAGE, FashnHumanParser
+
 from PIL import Image
 from tqdm.auto import tqdm
 
+from .cloth_segmentation import ClothSegmenter
 from .dwpose import DWposeDetector, draw_pose
 from .preprocessing import (
     BODY_COVERAGE_TO_FASHN_LABELS,
+    CATEGORY_TO_BODY_COVERAGE,
     FASHN_LABELS_TO_IDS,
     AspectPreserveResize,
     ResizePad,
@@ -81,7 +83,7 @@ class TryOnPipeline:
         # Load models
         self._setup_tryon_model()
         self._setup_pose_model()
-        self._setup_hp_model()
+        self._setup_cloth_segmenter()
 
         # Setup transforms (derived from model input shape)
         h, w = self.tryon_model.input_shape
@@ -95,6 +97,7 @@ class TryOnPipeline:
         dwpose_dir = os.path.join(self.weights_dir, "dwpose")
         yolox_path = os.path.join(dwpose_dir, "yolox_l.onnx")
         dwpose_path = os.path.join(dwpose_dir, "dw-ll_ucoco_384.onnx")
+        cloth_seg_path = os.path.join(self.weights_dir, "cloth_seg", "cloth_segm_u2net_latest.pth")
 
         missing = []
         if not os.path.exists(tryon_path):
@@ -103,6 +106,8 @@ class TryOnPipeline:
             missing.append(yolox_path)
         if not os.path.exists(dwpose_path):
             missing.append(dwpose_path)
+        if not os.path.exists(cloth_seg_path):
+            missing.append(cloth_seg_path)
 
         if missing:
             raise FileNotFoundError(
@@ -133,14 +138,20 @@ class TryOnPipeline:
 
         self.logger.info("DWPose loaded")
 
-    def _setup_hp_model(self):
-        """Load human parsing model."""
-        self.logger.info("Loading FashnHumanParser")
+    def _setup_cloth_segmenter(self):
+        """Load cloth segmentation model (U2NET)."""
+        cloth_seg_path = os.path.join(self.weights_dir, "cloth_seg", "cloth_segm_u2net_latest.pth")
+        self.logger.info(f"Loading ClothSegmenter from {cloth_seg_path}")
 
-        hp_device = "cuda" if self.device.type == "cuda" else "cpu"
-        self.hp_model = FashnHumanParser(device=hp_device)
+        cloth_seg_device = f"cuda:{self.device.index or 0}" if self.device.type == "cuda" else "cpu"
+        self.cloth_segmenter = ClothSegmenter(
+            checkpoint_path=cloth_seg_path,
+            device=cloth_seg_device,
+            logger=self.logger,
+        )
 
-        self.logger.info("FashnHumanParser loaded")
+        self.logger.info("ClothSegmenter loaded")
+
 
     @torch.inference_mode()
     def _sample(
@@ -262,9 +273,19 @@ class TryOnPipeline:
         person_pose_img = draw_pose(person_pose, person_image_np.shape[0], person_image_np.shape[1], grayscale=True)
         garment_pose_img = draw_pose(garment_pose, garment_image_np.shape[0], garment_image_np.shape[1], grayscale=True)
 
-        # Human parsing
-        person_seg_pred = self.hp_model.predict(person_image_np)
-        garment_seg_pred = self.hp_model.predict(garment_image_np)
+        # Cloth segmentation (U2NET) - replaces the removed fashn-human-parser.
+        # Only run segmentation when actually needed (masking is enabled).
+        if segmentation_free:
+            person_seg_pred = np.zeros(person_image_np.shape[:2], dtype=np.int64)
+        else:
+            self.logger.info("Running cloth segmentation on person image...")
+            person_seg_pred = self.cloth_segmenter.predict(person_image_np)
+
+        if garment_photo_type == "flat-lay":
+            garment_seg_pred = np.zeros(garment_image_np.shape[:2], dtype=np.int64)
+        else:
+            self.logger.info("Running cloth segmentation on garment image...")
+            garment_seg_pred = self.cloth_segmenter.predict(garment_image_np)
 
         # Get labels to segment based on category
         body_coverage = CATEGORY_TO_BODY_COVERAGE.get(category)

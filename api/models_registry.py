@@ -34,34 +34,68 @@ MODEL_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "model_images")
 # ──────────────────────────────────────────────────────────────────────────────
 
 MODELS: Dict[str, Dict[str, Any]] = {
+    # ── Women ────────────────────────────────────────────────────────────
     "woman_01": {
-        "name": "Woman - Fashion Model",
-        "image_filename": "model.webp",
+        "name": "Woman - Style 1",
+        "image_filename": "woman1.jpeg",
         "gender": "female",
         "supported_categories": ["tops", "bottoms", "one-pieces"],
     },
     "woman_02": {
-        "name": "Woman - Casual",
-        "image_filename": "woman.jpeg",
+        "name": "Woman - Style 2",
+        "image_filename": "woman2.jpeg",
         "gender": "female",
         "supported_categories": ["tops", "bottoms", "one-pieces"],
     },
-    "woman_03": {
-        "name": "Woman - Full Body",
-        "image_filename": "onewoman.jpeg",
-        "gender": "female",
-        "supported_categories": ["tops", "bottoms", "one-pieces"],
-    },
+    # ── Men ──────────────────────────────────────────────────────────────
     "man_01": {
         "name": "Man - Casual",
         "image_filename": "man.jpeg",
         "gender": "male",
         "supported_categories": ["tops", "bottoms", "one-pieces"],
     },
-    "man_02": {
-        "name": "Man - Full Body",
-        "image_filename": "oneman.jpeg",
+    # ── Kids ─────────────────────────────────────────────────────────────
+    "boy_01": {
+        "name": "Little Boy",
+        "image_filename": "little_boy.jpeg",
         "gender": "male",
+        "supported_categories": ["tops", "bottoms", "one-pieces"],
+    },
+    "girl_01": {
+        "name": "Little Girl",
+        "image_filename": "little_girl.jpeg",
+        "gender": "female",
+        "supported_categories": ["tops", "bottoms", "one-pieces"],
+    },
+    "boy_02": {
+        "name": "Mid Boy",
+        "image_filename": "mid_boy.jpeg",
+        "gender": "male",
+        "supported_categories": ["tops", "bottoms", "one-pieces"],
+    },
+    "girl_02": {
+        "name": "Mid Girl",
+        "image_filename": "mid_girl.jpeg",
+        "gender": "female",
+        "supported_categories": ["tops", "bottoms", "one-pieces"],
+    },
+    # ── Mannequins ───────────────────────────────────────────────────────
+    "mannequin_women": {
+        "name": "Women Mannequin",
+        "image_filename": "women_Mannequin.png",
+        "gender": "female",
+        "supported_categories": ["tops", "bottoms", "one-pieces"],
+    },
+    "mannequin_man": {
+        "name": "Man Mannequin",
+        "image_filename": "man_Mannequin.png",
+        "gender": "male",
+        "supported_categories": ["tops", "bottoms", "one-pieces"],
+    },
+    "mannequin_child": {
+        "name": "Child Mannequin",
+        "image_filename": "child_Mannequin.png",
+        "gender": "unisex",
         "supported_categories": ["tops", "bottoms", "one-pieces"],
     },
 }

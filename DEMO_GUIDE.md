@@ -52,20 +52,22 @@ The `fashn-human-parser` model had a **non-commercial license**, so we replaced 
 
 ### How the replacement works
 
-| Feature | fashn-human-parser (removed) | cloth-segmentation (new) |
-|---------|------------------------------|--------------------------|
-| Architecture | SegFormer-B4 | U2NET |
-| License | Non-commercial ❌ | MIT ✅ |
-| Output classes | 18 (body parts + clothing) | 4 (background + 3 clothing regions) |
-| Model size | ~244 MB | ~165 MB |
+| Feature        | fashn-human-parser (removed) | cloth-segmentation (new)            |
+| -------------- | ---------------------------- | ----------------------------------- |
+| Architecture   | SegFormer-B4                 | U2NET                               |
+| License        | Non-commercial ❌            | MIT ✅                              |
+| Output classes | 18 (body parts + clothing)   | 4 (background + 3 clothing regions) |
+| Model size     | ~244 MB                      | ~165 MB                             |
 
 The cloth-segmentation model outputs 4 classes:
+
 - **0**: Background
 - **1**: Upper body cloth (tops, jackets)
 - **2**: Lower body cloth (pants, skirts)
 - **3**: Full body cloth (dresses, jumpsuits)
 
 These are mapped to the FASHN 18-class label scheme:
+
 - `1 (upper body)` → `3 (top)`
 - `2 (lower body)` → `6 (pants)`
 - `3 (full body)` → `4 (dress)`
@@ -79,10 +81,10 @@ These are mapped to the FASHN 18-class label scheme:
 
 ### Files Added
 
-| File | Purpose |
-|------|---------|
-| `src/fashn_vton/cloth_segmentation/__init__.py` | Package exports |
-| `src/fashn_vton/cloth_segmentation/u2net.py` | U2NET architecture (44.1M params) |
+| File                                               | Purpose                                              |
+| -------------------------------------------------- | ---------------------------------------------------- |
+| `src/fashn_vton/cloth_segmentation/__init__.py`  | Package exports                                      |
+| `src/fashn_vton/cloth_segmentation/u2net.py`     | U2NET architecture (44.1M params)                    |
 | `src/fashn_vton/cloth_segmentation/segmenter.py` | `ClothSegmenter` wrapper with `predict()` method |
 
 ---
@@ -98,6 +100,7 @@ The model **automatically detects** whether a GPU is available. On CPU-only mach
 The `pyproject.toml` has already been changed from `onnxruntime-gpu` to `onnxruntime`.
 
 > **Note:** If you already installed `onnxruntime-gpu` by mistake, fix it with:
+>
 > ```bash
 > pip uninstall onnxruntime-gpu && pip install onnxruntime
 > ```
@@ -111,12 +114,14 @@ python scripts/download_weights.py --weights-dir ./weights
 ```
 
 This downloads (~2.2 GB total):
+
 - `weights/model.safetensors` - TryOnModel weights
 - `weights/dwpose/yolox_l.onnx` - YOLOX detector for pose estimation
 - `weights/dwpose/dw-ll_ucoco_384.onnx` - DWPose keypoint model
 - `weights/cloth_seg/cloth_segm_u2net_latest.pth` - U2NET cloth segmentation
 
 After download, the directory structure will be:
+
 ```
 weights/
 ├── model.safetensors
@@ -149,16 +154,16 @@ python examples/basic_inference.py \
 
 **Parameters:**
 
-| Parameter | Value | Why |
-|-----------|-------|-----|
-| `--weights-dir` | `./weights` | Path to downloaded weights |
-| `--person-image` | `examples/data/model.webp` | The person photo |
-| `--garment-image` | `examples/data/garment.webp` | The garment photo |
-| `--category` | `tops` | Options: `tops`, `bottoms`, `one-pieces` |
-| `--garment-photo-type` | `model` | `model` for worn garments, `flat-lay` for product shots |
-| `--device` | `cpu` | Force CPU (auto-detected anyway if no GPU) |
-| `--num-timesteps` | `20` | Lower = faster. Use 20 for speed, 30 for quality |
-| `--output-dir` | `outputs` | Where to save generated images |
+| Parameter                | Value                          | Why                                                         |
+| ------------------------ | ------------------------------ | ----------------------------------------------------------- |
+| `--weights-dir`        | `./weights`                  | Path to downloaded weights                                  |
+| `--person-image`       | `examples/data/model.webp`   | The person photo                                            |
+| `--garment-image`      | `examples/data/garment.webp` | The garment photo                                           |
+| `--category`           | `tops`                       | Options:`tops`, `bottoms`, `one-pieces`               |
+| `--garment-photo-type` | `model`                      | `model` for worn garments, `flat-lay` for product shots |
+| `--device`             | `cpu`                        | Force CPU (auto-detected anyway if no GPU)                  |
+| `--num-timesteps`      | `20`                         | Lower = faster. Use 20 for speed, 30 for quality            |
+| `--output-dir`         | `outputs`                    | Where to save generated images                              |
 
 > **Tip:** `--num-timesteps 20` is recommended for CPU to keep inference time reasonable.
 
@@ -203,23 +208,23 @@ print("Done! Saved to output.png")
 
 ### What Was Removed
 
-| Component | Reason |
-|-----------|--------|
-| `fashn-human-parser` dependency | Non-commercial license |
-| `FashnHumanParser` model loading | Replaced with `ClothSegmenter` |
-| `_setup_hp_model()` method | Replaced with `_setup_cloth_segmenter()` |
-| `self.hp_model.predict()` calls | Replaced with `self.cloth_segmenter.predict()` |
-| `download_human_parser()` in download script | Replaced with `download_cloth_segmentation()` |
-| `onnxruntime-gpu` dependency | Replaced with `onnxruntime` for CPU |
+| Component                                      | Reason                                          |
+| ---------------------------------------------- | ----------------------------------------------- |
+| `fashn-human-parser` dependency              | Non-commercial license                          |
+| `FashnHumanParser` model loading             | Replaced with`ClothSegmenter`                 |
+| `_setup_hp_model()` method                   | Replaced with`_setup_cloth_segmenter()`       |
+| `self.hp_model.predict()` calls              | Replaced with`self.cloth_segmenter.predict()` |
+| `download_human_parser()` in download script | Replaced with`download_cloth_segmentation()`  |
+| `onnxruntime-gpu` dependency                 | Replaced with`onnxruntime` for CPU            |
 
 ### What Was Added
 
-| Component | Purpose |
-|-----------|---------|
-| `cloth_segmentation/` module | U2NET model + ClothSegmenter wrapper |
-| `ClothSegmenter.predict()` | Returns segmentation map compatible with FASHN 18-class labels |
-| `download_cloth_segmentation()` | Downloads U2NET weights from Google Drive |
-| Zero-array fallback | When masking is disabled, zero arrays are used (no model call needed) |
+| Component                         | Purpose                                                               |
+| --------------------------------- | --------------------------------------------------------------------- |
+| `cloth_segmentation/` module    | U2NET model + ClothSegmenter wrapper                                  |
+| `ClothSegmenter.predict()`      | Returns segmentation map compatible with FASHN 18-class labels        |
+| `download_cloth_segmentation()` | Downloads U2NET weights from Google Drive                             |
+| Zero-array fallback               | When masking is disabled, zero arrays are used (no model call needed) |
 
 ---
 
@@ -241,6 +246,7 @@ Try reducing `num_timesteps` to `15` or `10` (quality will decrease).
 ### Slow Inference
 
 CPU inference is inherently slower. Tips:
+
 - Use `--num-timesteps 20` (minimum recommended)
 - Close other applications to free up RAM
 - Use a machine with more CPU cores if possible
@@ -256,6 +262,7 @@ python scripts/download_weights.py --weights-dir ./weights
 ### Cloth Segmentation Download Fails
 
 If `gdown` fails to download from Google Drive:
+
 1. Download manually from: https://drive.google.com/uc?id=1mhF3yqd7R-Uje092eypktNl-RoZNuiCJ
 2. Place at: `weights/cloth_seg/cloth_segm_u2net_latest.pth`
 
@@ -266,6 +273,7 @@ If `gdown` fails to download from Google Drive:
 The main FASHN VTON v1.5 model is licensed under **Apache-2.0**.
 
 Third-party components used:
+
 - [cloth-segmentation (U2NET)](https://github.com/levindabhi/cloth-segmentation) (MIT)
 - [DWPose](https://github.com/IDEA-Research/DWPose) (Apache-2.0)
 - [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (Apache-2.0)

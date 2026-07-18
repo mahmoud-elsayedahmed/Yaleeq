@@ -71,11 +71,12 @@ class ModelsListResponse(BaseModel):
 #     - garment_image: File (the garment photo — JPEG/PNG/WebP)
 #     - model_id: String (ID from the models list)
 #     - category: String ("tops" | "bottoms" | "one-pieces")
-#     - garment_photo_type: String (optional, default "flat-lay")
+#     - flat_lay: bool (optional, default true — true for product shots, false if worn by someone)
 #     - num_timesteps: int (optional, default 20)
 #     - seed: int (optional, default 42)
 #
-#   Response: image/png binary — use Image.memory(responseBytes) in Flutter
+#   Response: JSON { result_id, result_url }
+#     Then use GET /api/v1/results/{result_id} to fetch the image.
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -90,21 +91,21 @@ class TryOnFormFields(BaseModel):
     var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/v1/try-on'));
     request.fields['model_id'] = selectedModelId;
     request.fields['category'] = 'tops';
-    request.fields['garment_photo_type'] = 'flat-lay';
+    request.fields['flat_lay'] = 'true';   // true = product shot, false = worn by model
     request.fields['num_timesteps'] = '20';
     request.fields['seed'] = '42';
     request.files.add(await http.MultipartFile.fromPath('garment_image', imagePath));
     var response = await request.send();
-    var imageBytes = await response.stream.toBytes();
-    // Display with Image.memory(imageBytes)
+    var data = jsonDecode(await response.stream.bytesToString());
+    var resultUrl = data['result_url'];  // Use to fetch the generated image
     ```
     """
 
     model_id: str = Field(..., description="ID of the selected person model")
     category: Literal["tops", "bottoms", "one-pieces"] = Field(..., description="Garment category")
-    garment_photo_type: Literal["model", "flat-lay"] = Field(
-        default="flat-lay",
-        description="'flat-lay' for product shots (most common), 'model' if garment is worn by someone",
+    flat_lay: bool = Field(
+        default=True,
+        description="true = garment is a flat-lay/product shot (default), false = garment is worn by a person",
     )
     num_timesteps: int = Field(
         default=20,
@@ -113,6 +114,23 @@ class TryOnFormFields(BaseModel):
         description="Diffusion steps — 20=fast (CPU), 30=balanced, 50=quality",
     )
     seed: int = Field(default=42, description="Random seed for reproducibility")
+
+
+class TryOnResponse(BaseModel):
+    """Response for POST /api/v1/try-on
+
+    Flutter: Use the result_url to fetch and display the generated image.
+    ```dart
+    // After receiving the response:
+    final data = jsonDecode(response.body);
+    Image.network('$baseUrl${data["result_url"]}');
+    ```
+    """
+
+    result_id: str = Field(..., description="Unique ID for this result — use to fetch the image")
+    result_url: str = Field(..., description="URL to fetch the generated image — GET /api/v1/results/{result_id}")
+    model_id: str = Field(..., description="The person model that was used")
+    category: str = Field(..., description="The garment category that was used")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

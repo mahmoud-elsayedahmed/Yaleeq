@@ -30,41 +30,51 @@ FASHN VTON v1.5 pipeline. It provides REST endpoints for Flutter
      → Use as image source in the models grid:
        Image.network('$baseUrl/api/v1/models/$modelId/thumbnail')
 
-  4. POST /api/v1/try-on  (multipart/form-data)
-     → THE MAIN ENDPOINT — Send garment image + model_id + category.
-     → Returns the generated image as image/png bytes.
-     → Flutter usage:
-         var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/v1/try-on'));
-         request.fields['model_id'] = 'woman_01';
-         request.fields['category'] = 'tops';
-         request.fields['garment_photo_type'] = 'flat-lay';
-         request.files.add(await http.MultipartFile.fromPath('garment_image', filePath));
-         var response = await request.send();
-         var bytes = await response.stream.toBytes();
-         // Display: Image.memory(bytes)
+   4. POST /api/v1/try-on  (multipart/form-data)
+      → THE MAIN ENDPOINT — Send garment image + model_id + category.
+      → Returns JSON { result_id, result_url, model_id, category }
+      → Flutter usage:
+          var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/v1/try-on'));
+          request.fields['model_id'] = 'woman_01';
+          request.fields['category'] = 'tops';
+          request.fields['flat_lay'] = 'true';  // true = product shot, false = worn by model
+          request.files.add(await http.MultipartFile.fromPath('garment_image', filePath));
+          var response = await request.send();
+          var data = jsonDecode(await response.stream.bytesToString());
+          // Fetch result: Image.network('$baseUrl${data["result_url"]}')
+
+   5. GET  /api/v1/results/{result_id}
+      → Get the generated try-on image by result ID.
+      → Returns the image as binary PNG.
+      → Flutter usage: Image.network('$baseUrl/api/v1/results/$resultId')
 
 ──────────────────────────────────────────────────────────
 """
 
 import io
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse, JSONResponse
 from PIL import Image
 
 from .models_registry import MODELS, get_model_image_path, validate_all_models
-from .schemas import ErrorResponse, HealthResponse, ModelInfo, ModelsListResponse
+from .schemas import ErrorResponse, HealthResponse, ModelInfo, ModelsListResponse, TryOnResponse
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global state — Pipeline is loaded once at startup and shared across requests.
 # ──────────────────────────────────────────────────────────────────────────────
 pipeline = None
 pipeline_device = "unknown"
+
+# Results storage — generated images are saved to disk and tracked here.
+RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+results_registry: dict[str, dict] = {}  # result_id -> {path, model_id, category}
 
 logger = logging.getLogger("yaleq-api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(name)s — %(levelname)s — %(message)s")
@@ -81,6 +91,10 @@ async def lifespan(app: FastAPI):
     Once loaded, it stays in memory for all requests.
     """
     global pipeline, pipeline_device
+
+    # Create results directory
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    logger.info(f"Results directory: {RESULTS_DIR}")
 
     # Validate model images exist
     missing = validate_all_models()
@@ -309,26 +323,26 @@ async def get_model_thumbnail(model_id: str):
 #    - garment_image: File (JPEG/PNG/WebP — the garment to try on)
 #    - model_id: str (e.g. "woman_01")
 #    - category: str ("tops" | "bottoms" | "one-pieces")
-#    - garment_photo_type: str (optional, default "flat-lay")
+#    - flat_lay: bool (optional, default true — true for product shots, false if worn by model)
 #    - num_timesteps: int (optional, default 20)
 #    - seed: int (optional, default 42)
 #
-#  Response: image/png binary (the generated try-on image)
+#  Response: JSON { result_id, result_url, model_id, category }
 #
 #  Flutter example:
 #    var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/api/v1/try-on'));
 #    request.fields['model_id'] = 'woman_01';
 #    request.fields['category'] = 'tops';
-#    request.fields['garment_photo_type'] = 'flat-lay';
+#    request.fields['flat_lay'] = 'true';   // true = product shot, false = worn by model
 #    request.fields['num_timesteps'] = '20';
 #    request.files.add(
 #      await http.MultipartFile.fromPath('garment_image', imagePath),
 #    );
 #    var response = await request.send();
 #    if (response.statusCode == 200) {
-#      var bytes = await response.stream.toBytes();
-#      setState(() { resultImage = bytes; });
-#      // Display: Image.memory(resultImage)
+#      var data = jsonDecode(await response.stream.bytesToString());
+#      var resultUrl = data['result_url'];
+#      // Display: Image.network('$baseUrl$resultUrl')
 #    }
 #
 # ══════════════════════════════════════════════════════════════════════════════
@@ -336,10 +350,11 @@ async def get_model_thumbnail(model_id: str):
 
 @app.post(
     "/api/v1/try-on",
+    response_model=TryOnResponse,
     tags=["Try-On"],
     summary="Generate virtual try-on image",
     responses={
-        200: {"content": {"image/png": {}}, "description": "Generated try-on image"},
+        200: {"model": TryOnResponse, "description": "Try-on result with image URL"},
         400: {"model": ErrorResponse, "description": "Invalid request"},
         404: {"model": ErrorResponse, "description": "Model not found"},
         503: {"model": ErrorResponse, "description": "Pipeline not loaded"},
@@ -349,9 +364,9 @@ async def try_on(
     garment_image: UploadFile = File(..., description="Garment image file (JPEG/PNG/WebP)"),
     model_id: str = Form(..., description="ID of the person model to use (e.g. 'woman_01')"),
     category: Literal["tops", "bottoms", "one-pieces"] = Form(..., description="Garment category"),
-    garment_photo_type: Literal["model", "flat-lay"] = Form(
-        default="flat-lay",
-        description="'flat-lay' for product shots (default), 'model' if garment is worn by someone",
+    flat_lay: bool = Form(
+        default=True,
+        description="true = garment is a flat-lay/product shot (default), false = garment is worn by a person",
     ),
     num_timesteps: int = Form(default=20, ge=10, le=50, description="Diffusion steps (20=fast, 30=balanced)"),
     seed: int = Form(default=42, description="Random seed for reproducibility"),
@@ -359,7 +374,8 @@ async def try_on(
     """Generate a photorealistic try-on image.
 
     The user uploads a garment photo and selects a pre-loaded person model.
-    The API generates an image of the person wearing the garment.
+    The API generates an image of the person wearing the garment, saves it,
+    and returns a JSON response with the result URL.
 
     **Processing time:** ~5-15 minutes on CPU, ~10-30 seconds on GPU.
 
@@ -372,7 +388,7 @@ async def try_on(
     request.fields['category'] = selectedCategory;       // 'tops', 'bottoms', 'one-pieces'
 
     // Optional fields
-    request.fields['garment_photo_type'] = 'flat-lay';  // or 'model'
+    request.fields['flat_lay'] = 'true';     // true = product shot, false = worn by model
     request.fields['num_timesteps'] = '20';
     request.fields['seed'] = '42';
 
@@ -381,11 +397,12 @@ async def try_on(
       await http.MultipartFile.fromPath('garment_image', garmentImagePath),
     );
 
-    // Send and receive image bytes
+    // Send and get result
     var response = await request.send();
     if (response.statusCode == 200) {
-      final bytes = await response.stream.toBytes();
-      // Display: Image.memory(bytes)
+      final data = jsonDecode(await response.stream.bytesToString());
+      final resultUrl = '$baseUrl${data["result_url"]}';
+      // Display: Image.network(resultUrl)
     } else {
       final body = await response.stream.bytesToString();
       final error = jsonDecode(body)['detail'];
@@ -417,9 +434,12 @@ async def try_on(
     # Note: Some clients (e.g. curl) send webp files as application/octet-stream,
     # so we accept that too. The actual image validity is checked when PIL opens it.
     allowed_types = {"image/", "application/octet-stream", "multipart/form-data"}
-    content_type = garment_image.content_type or ""
-    if content_type and not any(content_type.startswith(t) for t in allowed_types):
-        raise HTTPException(status_code=400, detail=f"Invalid file type: {content_type}. Expected an image file.")
+    content_type_header = garment_image.content_type or ""
+    if content_type_header and not any(content_type_header.startswith(t) for t in allowed_types):
+        raise HTTPException(status_code=400, detail=f"Invalid file type: {content_type_header}. Expected an image file.")
+
+    # ── Convert flat_lay bool to garment_photo_type string ──
+    garment_photo_type = "flat-lay" if flat_lay else "model"
 
     # ── Load images ──
     try:
@@ -438,7 +458,7 @@ async def try_on(
     try:
         logger.info(
             f"Starting try-on: model={model_id}, category={category}, "
-            f"type={garment_photo_type}, steps={num_timesteps}, seed={seed}"
+            f"flat_lay={flat_lay}, steps={num_timesteps}, seed={seed}"
         )
 
         result = pipeline(
@@ -451,27 +471,94 @@ async def try_on(
             segmentation_free=True,  # Best quality — recommended default
         )
 
-        # Convert result image to PNG bytes
+        # Save result image to disk with a unique ID
+        result_id = str(uuid.uuid4())
+        result_path = os.path.join(RESULTS_DIR, f"{result_id}.png")
         output_image = result.images[0]
-        img_buffer = io.BytesIO()
-        output_image.save(img_buffer, format="PNG")
-        img_buffer.seek(0)
+        output_image.save(result_path, format="PNG")
 
-        logger.info(f"Try-on complete: model={model_id}, category={category}")
+        # Track the result
+        results_registry[result_id] = {
+            "path": result_path,
+            "model_id": model_id,
+            "category": category,
+        }
 
-        # ── Return the image as binary PNG ──
-        # Flutter: Read as bytes → Image.memory(bytes)
-        return StreamingResponse(
-            img_buffer,
-            media_type="image/png",
-            headers={
-                "Content-Disposition": f"inline; filename=tryon_{model_id}_{category}.png",
-                "X-Model-Id": model_id,
-                "X-Category": category,
-                "X-Seed": str(seed),
-            },
+        logger.info(f"Try-on complete: result_id={result_id}, model={model_id}, category={category}")
+
+        # ── Return JSON with result info ──
+        # Flutter: use result_url to fetch the generated image
+        return TryOnResponse(
+            result_id=result_id,
+            result_url=f"/api/v1/results/{result_id}",
+            model_id=model_id,
+            category=category,
         )
 
     except Exception as e:
         logger.error(f"Inference error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Try-on inference failed: {str(e)}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ENDPOINT 5: Get Try-On Result
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  Flutter: Use this to fetch the generated image after a try-on request.
+#
+#  GET /api/v1/results/{result_id}
+#
+#  Response: image/png binary (the generated try-on image)
+#
+#  Flutter usage:
+#    Image.network('$baseUrl/api/v1/results/$resultId')
+#
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get(
+    "/api/v1/results/{result_id}",
+    tags=["Results"],
+    summary="Get a generated try-on result image",
+    responses={
+        200: {"content": {"image/png": {}}, "description": "Generated try-on image"},
+        404: {"model": ErrorResponse, "description": "Result not found"},
+    },
+)
+async def get_result(result_id: str):
+    """Fetch a previously generated try-on image by its result ID.
+
+    Flutter usage:
+    ```dart
+    // Option 1: Direct network image
+    Image.network('$baseUrl/api/v1/results/$resultId')
+
+    // Option 2: Download bytes for caching
+    final response = await http.get(Uri.parse('$baseUrl/api/v1/results/$resultId'));
+    if (response.statusCode == 200) {
+      final imageBytes = response.bodyBytes;
+      // Display: Image.memory(imageBytes)
+      // Or save locally for caching
+    }
+    ```
+    """
+    # Check in-memory registry first
+    if result_id in results_registry:
+        result_path = results_registry[result_id]["path"]
+    else:
+        # Fallback: check if file exists on disk (e.g. after server restart)
+        result_path = os.path.join(RESULTS_DIR, f"{result_id}.png")
+
+    if not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail=f"Result '{result_id}' not found.")
+
+    with open(result_path, "rb") as f:
+        image_bytes = f.read()
+
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f"inline; filename=tryon_{result_id}.png",
+        },
+    )

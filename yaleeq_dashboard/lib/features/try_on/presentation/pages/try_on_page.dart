@@ -38,7 +38,7 @@ class TryOnPage extends StatelessWidget {
                 child: CustomScrollView(
                   physics: const BouncingScrollPhysics(),
                   slivers: [
-                    _AppBar(modelsStatus: state.modelsStatus),
+                    const _AppBar(),
                     SliverToBoxAdapter(
                       child: _Body(state: state),
                     ),
@@ -107,8 +107,7 @@ class _BackgroundGradient extends StatelessWidget {
 // ── App Bar ────────────────────────────────────────────────
 
 class _AppBar extends StatelessWidget {
-  const _AppBar({required this.modelsStatus});
-  final ModelsStatus modelsStatus;
+  const _AppBar();
 
   @override
   Widget build(BuildContext context) {
@@ -138,59 +137,11 @@ class _AppBar extends StatelessWidget {
           ],
         ),
       ),
-      actions: [
-        Padding(
-          padding: const EdgeInsets.only(right: 16),
-          child: _ServerDot(status: modelsStatus),
-        ),
-      ],
     );
   }
 }
 
-class _ServerDot extends StatelessWidget {
-  const _ServerDot({required this.status});
-  final ModelsStatus status;
 
-  @override
-  Widget build(BuildContext context) {
-    final (color, label) = switch (status) {
-      ModelsStatus.loaded => (AppColors.success, 'Online'),
-      ModelsStatus.loading || ModelsStatus.initial => (AppColors.accent, 'Connecting'),
-      ModelsStatus.error => (AppColors.error, 'Offline'),
-    };
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: color.withAlpha(128),
-                blurRadius: 6,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      ],
-    );
-  }
-}
 
 // ── Body ───────────────────────────────────────────────────
 

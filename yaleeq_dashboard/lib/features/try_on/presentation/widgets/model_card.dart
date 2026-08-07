@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:yaleeq_dashboard/app/theme/app_colors.dart';
 import 'package:yaleeq_dashboard/core/constants/api_constants.dart';
+import 'package:yaleeq_dashboard/core/constants/model_assets.dart';
 import 'package:yaleeq_dashboard/features/try_on/domain/entities/model_info.dart';
 
 /// A single selectable model card for the horizontal carousel.
@@ -50,7 +51,7 @@ class ModelCard extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              _Thumbnail(thumbnailUrl: model.thumbnailUrl),
+              _Thumbnail(thumbnailUrl: model.thumbnailUrl, modelId: model.id),
               _NameOverlay(model: model),
               if (isSelected) const _CheckBadge(),
             ],
@@ -64,28 +65,35 @@ class ModelCard extends StatelessWidget {
 // ── Private sub-widgets ────────────────────────────────────
 
 class _Thumbnail extends StatelessWidget {
-  const _Thumbnail({required this.thumbnailUrl});
+  const _Thumbnail({required this.thumbnailUrl, required this.modelId});
   final String thumbnailUrl;
+  final String modelId;
 
   @override
   Widget build(BuildContext context) {
+    final localAsset = ModelAssets.assetPath(modelId);
+
     return CachedNetworkImage(
       imageUrl: ApiConstants.fullThumbnailUrl(thumbnailUrl),
       fit: BoxFit.cover,
-      placeholder: (context, url) => Container(
-        color: AppColors.surfaceLight,
-        child: const Center(
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      ),
-      errorWidget: (context, url, error) => Container(
-        color: AppColors.surfaceLight,
-        child: const Icon(
-          Icons.person_outline,
-          color: AppColors.textHint,
-          size: 40,
-        ),
-      ),
+      placeholder: (context, url) => localAsset != null
+          ? Image.asset(localAsset, fit: BoxFit.cover)
+          : Container(
+              color: AppColors.surfaceLight,
+              child: const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+      errorWidget: (context, url, error) => localAsset != null
+          ? Image.asset(localAsset, fit: BoxFit.cover)
+          : Container(
+              color: AppColors.surfaceLight,
+              child: const Icon(
+                Icons.person_outline,
+                color: AppColors.textHint,
+                size: 40,
+              ),
+            ),
     );
   }
 }

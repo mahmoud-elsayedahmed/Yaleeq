@@ -1,5 +1,6 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:yaleeq_dashboard/core/constants/fallback_models.dart';
 import 'package:yaleeq_dashboard/core/error/failures.dart';
 import 'package:yaleeq_dashboard/core/error/result.dart';
 import 'package:yaleeq_dashboard/features/try_on/domain/entities/model_info.dart';
@@ -32,10 +33,12 @@ class TryOnCubit extends Cubit<TryOnState> {
           models: data,
           modelsStatus: ModelsStatus.loaded,
         ));
-      case Err(:final failure):
+      case Err():
+        // API unreachable — use bundled fallback models so the carousel
+        // still renders with local asset images.
         emit(state.copyWith(
-          errorMessage: failure.message,
-          modelsStatus: ModelsStatus.error,
+          models: fallbackModels,
+          modelsStatus: ModelsStatus.loaded,
         ));
     }
   }

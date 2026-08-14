@@ -22,6 +22,51 @@ def _attn_processor(q: Tensor, k: Tensor, v: Tensor) -> Tensor:
     return torch.nn.functional.scaled_dot_product_attention(q, k, v)
 
 
+def bipartite_soft_matching(metric: Tensor, r: int):
+    """
+    Bipartite Soft Matching for Token Merging (ToMe).
+    Merges r tokens with highest cosine similarity.
+    Returns (merge_fn, unmerge_fn).
+    """
+    if r <= 0:
+        return lambda x: x, lambda x: x
+
+    B, L, _ = metric.shape
+    r = min(r, L // 2)
+    if r <= 0:
+        return lambda x: x, lambda x: x
+
+    idx_a = torch.arange(0, L, 2, device=metric.device)
+    idx_b = torch.arange(1, L, 2, device=metric.device)
+
+    a = metric[:, idx_a]
+    b = metric[:, idx_b]
+
+    a_norm = nn.functional.normalize(a, dim=-1)
+    b_norm = nn.functional.normalize(b, dim=-1)
+    scores = torch.bmm(a_norm, b_norm.transpose(1, 2))  # (B, len_a, len_b)
+
+    val, node_max = scores.max(dim=-1)  # (B, len_a)
+    _, topk_idx = val.topk(r, dim=-1)   # (B, r)
+    topk_idx = topk_idx.sort(dim=-1).values
+
+    def merge(x: Tensor) -> Tensor:
+        x_a = x[:, idx_a]
+        x_b = x[:, idx_b].clone()
+        dst_idx = node_max.gather(1, topk_idx)
+        src = x_a.gather(1, topk_idx.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+        x_b.scatter_reduce_(1, dst_idx.unsqueeze(-1).expand(-1, -1, x.shape[-1]), src, reduce="mean")
+        mask = torch.ones(B, x_a.shape[1], device=x.device, dtype=torch.bool)
+        mask.scatter_(1, topk_idx, False)
+        unmerged_a = x_a[mask].view(B, -1, x.shape[-1])
+        return torch.cat([x_b, unmerged_a], dim=1)
+
+    def unmerge(x: Tensor) -> Tensor:
+        return x
+
+    return merge, unmerge
+
+
 def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
     q, k = apply_rope(q, k, pe)
     x = _attn_processor(q, k, v)
@@ -439,6 +484,12 @@ class TryOnModel(nn.Module):
 
         self.final_layer = LastLayer(hidden_size, out_channels=channels_in * self.patch_size**2)
         self._pe_cache = {}
+        self.tome_ratio = 0.0
+
+    def enable_tome(self, ratio: float = 0.2):
+        """Enable Token Merging (ToMe) with specified merge ratio (0.0 to 0.5)."""
+        self.tome_ratio = max(0.0, min(0.5, float(ratio)))
+        return self
 
     # forward with classifier free guidance
 

@@ -114,7 +114,10 @@ async def lifespan(app: FastAPI):
 
     pipeline = TryOnPipeline(weights_dir="./weights")
     pipeline_device = str(pipeline.device)
-    logger.info(f"Pipeline loaded on device: {pipeline_device}")
+    logger.info(
+        f"Pipeline loaded on device: {pipeline_device} "
+        f"(Channels-Last: {pipeline.use_channels_last}, Compiled: {pipeline.compile_model}, ToMe: {pipeline.tome_ratio})"
+    )
 
     # Pre-warm person model cache for instant inference on fixed models
     logger.info("Pre-caching fixed person models...")

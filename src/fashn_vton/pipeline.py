@@ -63,9 +63,29 @@ class TryOnPipeline:
         weights_dir: str,
         device: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        use_channels_last: bool = True,
+        compile_model: Optional[bool] = None,
+        compile_mode: str = "default",
+        tome_ratio: Optional[float] = None,
     ):
         self.weights_dir = os.path.abspath(weights_dir)
         self.logger = logger or setup_logger("TryOnPipeline", level=logging.INFO)
+        self.use_channels_last = use_channels_last
+
+        if compile_model is None:
+            self.compile_model = os.getenv("FASHN_COMPILE_MODEL", "false").lower() in ("true", "1", "yes")
+        else:
+            self.compile_model = compile_model
+        self.compile_mode = compile_mode
+
+        if tome_ratio is None:
+            env_tome = os.getenv("FASHN_TOME_RATIO", "0.0")
+            try:
+                self.tome_ratio = float(env_tome)
+            except ValueError:
+                self.tome_ratio = 0.0
+        else:
+            self.tome_ratio = float(tome_ratio)
 
         # Setup device
         self.device = torch.device(device if device else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -120,7 +140,7 @@ class TryOnPipeline:
             )
 
     def _setup_tryon_model(self):
-        """Load the TryOn model."""
+        """Load and optimize the TryOn model."""
         model_path = os.path.join(self.weights_dir, "model.safetensors")
         self.logger.info(f"Loading TryOnModel from {model_path}")
 
@@ -128,6 +148,26 @@ class TryOnPipeline:
         state_dict = load_checkpoint(model_path, device=str(self.device))
         self.tryon_model.load_state_dict(state_dict)
         self.tryon_model.to(self.device, dtype=self.inference_dtype).eval()
+
+        if self.use_channels_last:
+            self.logger.info("Applying Channels Last (NHWC) memory format to TryOnModel")
+            self.tryon_model.to(memory_format=torch.channels_last)
+
+        if self.tome_ratio and self.tome_ratio > 0:
+            self.logger.info(f"Enabling Token Merging (ToMe) with ratio {self.tome_ratio}")
+            self.tryon_model.enable_tome(self.tome_ratio)
+
+        if self.compile_model:
+            self.logger.info(f"Compiling TryOnModel with torch.compile (mode='{self.compile_mode}', backend='inductor')...")
+            try:
+                self.tryon_model = torch.compile(
+                    self.tryon_model,
+                    mode=self.compile_mode,
+                    backend="inductor",
+                )
+                self.logger.info("TryOnModel compiled successfully with torch.compile")
+            except Exception as e:
+                self.logger.warning(f"torch.compile failed, falling back to eager mode: {e}")
 
         self.logger.info("TryOnModel loaded")
 
@@ -211,7 +251,10 @@ class TryOnPipeline:
             t = numpy_to_torch(img).unsqueeze(0)
             t = normalize_uint8_to_neg1_1(t)
             t = t.to(self.device).repeat(num_samples, 1, 1, 1)
-            return t.to(dtype=self.inference_dtype)
+            t = t.to(dtype=self.inference_dtype)
+            if self.use_channels_last:
+                t = t.to(memory_format=torch.channels_last)
+            return t
 
         ca_tensor = prepare_tensor(ca_image)
         person_pose_tensor = prepare_tensor(person_pose_img)
@@ -257,6 +300,8 @@ class TryOnPipeline:
         # Init noisy images
         c, h, w = self.tryon_model.channels_in, *self.tryon_model.input_shape
         images = torch.randn((batch_size, c, h, w), dtype=dtype, device=device)
+        if self.use_channels_last:
+            images = images.to(memory_format=torch.channels_last)
 
         # Time schedule (from 0 -> 1)
         timesteps = get_rf_schedule(num_steps=num_timesteps, mu=time_shift_mu)
@@ -381,7 +426,10 @@ class TryOnPipeline:
             t = numpy_to_torch(img).unsqueeze(0)
             t = normalize_uint8_to_neg1_1(t)
             t = t.to(self.device).repeat(num_samples, 1, 1, 1)
-            return t.to(dtype=self.inference_dtype)
+            t = t.to(dtype=self.inference_dtype)
+            if self.use_channels_last:
+                t = t.to(memory_format=torch.channels_last)
+            return t
 
         garment_tensor = prepare_tensor(garment_image_processed)
         garment_pose_tensor = prepare_tensor(garment_pose_img)

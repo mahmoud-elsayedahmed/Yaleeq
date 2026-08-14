@@ -91,6 +91,9 @@ class TryOnPipeline:
         self.pre_resize = AspectPreserveResize(target_size=(max_dim, max_dim), mode="fit", backend="pil")
         self.resize_pad_fn = ResizePad((w, h), backend="opencv")
 
+        # In-memory cache for person model features
+        self._person_cache: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
+
     def _validate_weights(self):
         """Check that required weight files exist."""
         tryon_path = os.path.join(self.weights_dir, "model.safetensors")
@@ -152,6 +155,85 @@ class TryOnPipeline:
 
         self.logger.info("ClothSegmenter loaded")
 
+    def _get_or_compute_person_features(
+        self,
+        person_image: Image.Image,
+        category: str,
+        segmentation_free: bool,
+        num_samples: int,
+        person_model_id: Optional[str] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Get precomputed or compute cached person features (pose tensor & agnostic tensor)."""
+        # Create cache key
+        model_tag = person_model_id or getattr(person_image, "_model_id", None) or str(id(person_image))
+        cache_key = (model_tag, category, segmentation_free, num_samples)
+
+        if cache_key in self._person_cache:
+            self.logger.info(f"Reusing cached person features for model '{model_tag}' ({category})")
+            cached_ca, cached_pose = self._person_cache[cache_key]
+            return cached_ca.clone(), cached_pose.clone()
+
+        # Compute from scratch
+        person_image_resized = self.pre_resize(person_image, allow_upsampling=False)
+        person_image_np = np.array(person_image_resized)
+
+        # Pose detection (DWPose expects BGR)
+        person_pose = self.pose_model(person_image_np[..., ::-1])
+        person_pose_img = draw_pose(person_pose, person_image_np.shape[0], person_image_np.shape[1], grayscale=True)
+
+        # Cloth segmentation (U2NET)
+        if segmentation_free:
+            person_seg_pred = np.zeros(person_image_np.shape[:2], dtype=np.int64)
+        else:
+            self.logger.info("Running cloth segmentation on person image...")
+            person_seg_pred = self.cloth_segmenter.predict(person_image_np)
+
+        # Get labels to segment based on category
+        body_coverage = CATEGORY_TO_BODY_COVERAGE.get(category)
+        labels_to_segment = BODY_COVERAGE_TO_FASHN_LABELS.get(body_coverage)
+        labels_to_segment_indices = [FASHN_LABELS_TO_IDS[label] for label in labels_to_segment]
+
+        # Create clothing-agnostic image
+        ca_image = create_clothing_agnostic_image(
+            img_np=person_image_np.copy(),
+            seg_pred=person_seg_pred.copy(),
+            labels_to_segment_indices=labels_to_segment_indices.copy(),
+            body_coverage=body_coverage,
+            disable_masking=segmentation_free,
+            logger=self.logger,
+        )
+
+        # Resize/pad for model input
+        ca_image = self.resize_pad_fn(ca_image, mem_padding=True)
+        person_pose_img = self.resize_pad_fn(person_pose_img, interpolation=cv2.INTER_NEAREST_EXACT)
+
+        def prepare_tensor(img: np.ndarray) -> torch.Tensor:
+            t = numpy_to_torch(img).unsqueeze(0)
+            t = normalize_uint8_to_neg1_1(t)
+            t = t.to(self.device).repeat(num_samples, 1, 1, 1)
+            return t.to(dtype=self.inference_dtype)
+
+        ca_tensor = prepare_tensor(ca_image)
+        person_pose_tensor = prepare_tensor(person_pose_img)
+
+        # Store in cache
+        self._person_cache[cache_key] = (ca_tensor, person_pose_tensor)
+        self.logger.info(f"Cached person features for model '{model_tag}' ({category})")
+
+        return ca_tensor.clone(), person_pose_tensor.clone()
+
+    def precompute_model(self, model_id: str, person_image: Image.Image, categories: Optional[List[str]] = None):
+        """Precompute features for a fixed person model across all supported categories."""
+        if categories is None:
+            categories = ["tops", "bottoms", "one-pieces"]
+        for cat in categories:
+            self._get_or_compute_person_features(
+                person_image=person_image,
+                category=cat,
+                segmentation_free=True,
+                num_samples=1,
+                person_model_id=model_id,
+            )
 
     @torch.inference_mode()
     def _sample(
@@ -162,13 +244,13 @@ class TryOnPipeline:
         person_poses: torch.Tensor,
         garment_poses: torch.Tensor,
         garment_categories: torch.Tensor,
-        num_timesteps: int = 30,
+        num_timesteps: int = 20,
         time_shift_mu: float = 1.5,
         guidance_scale: float = 1.5,
-        skip_cfg_last_n_steps: int = 1,
+        skip_cfg_last_n_steps: int = 3,
         use_tqdm: bool = True,
     ) -> List[Image.Image]:
-        """Euler sampling with CFG."""
+        """Euler sampling with optimized CFG."""
         device, dtype = ca_images.device, ca_images.dtype
         batch_size = ca_images.shape[0]
 
@@ -199,13 +281,12 @@ class TryOnPipeline:
             dt = t_prev - t_curr
             t_vec = torch.full((batch_size,), t_curr, dtype=dtype, device=device)
 
-            pred = self.tryon_model.forward_for_cfg(images, t_vec, **model_kwargs)
-            v_c, v_u = pred["v_c"], pred["v_u"]
-
-            # Skip CFG at final steps to prevent color saturation
-            if skip_cfg_last_n_steps > 0 and step_idx >= num_timesteps - skip_cfg_last_n_steps:
-                v_guided = v_c
+            # Skip CFG at final steps to save 50% compute on those steps and prevent color saturation
+            if skip_cfg_last_n_steps > 0 and step_idx >= (len(timesteps) - 1) - skip_cfg_last_n_steps:
+                v_guided = self.tryon_model.forward_conditional_only(images, t_vec, **model_kwargs)
             else:
+                pred = self.tryon_model.forward_for_cfg(images, t_vec, **model_kwargs)
+                v_c, v_u = pred["v_c"], pred["v_u"]
                 v_guided = v_u + guidance_scale * (v_c - v_u)
 
             images = images + dt * v_guided
@@ -221,14 +302,15 @@ class TryOnPipeline:
         category: Literal["tops", "bottoms", "one-pieces"],
         garment_photo_type: Literal["model", "flat-lay"] = "model",
         num_samples: int = 1,
-        num_timesteps: int = 30,
+        num_timesteps: int = 15,
         guidance_scale: float = 1.5,
-        skip_cfg_last_n_steps: int = 1,
+        skip_cfg_last_n_steps: int = 3,
         seed: int = 42,
         segmentation_free: bool = True,
+        person_model_id: Optional[str] = None,
     ) -> PipelineOutput:
         """
-        Run virtual try-on inference.
+        Run virtual try-on inference with CPU performance optimizations.
 
         Args:
             person_image: RGB image of the person to dress.
@@ -238,13 +320,12 @@ class TryOnPipeline:
                 "flat-lay" for product shots on plain backgrounds.
             num_samples: Number of output images to generate (1-4).
             num_timesteps: Diffusion sampling steps. Higher = better quality, slower.
-                Recommended: 20 (fast), 30 (balanced), 50 (quality).
+                Recommended on CPU: 12-15 (fast), 20 (standard).
             guidance_scale: Classifier-free guidance strength.
-            skip_cfg_last_n_steps: Skip CFG for final N steps to prevent color saturation.
+            skip_cfg_last_n_steps: Skip CFG for final N steps (saves 50% compute on those steps).
             seed: Random seed for reproducibility.
             segmentation_free: If True, generate without masking the person image.
-                Recommended for better body preservation and unconstrained garment volume
-                (allows garments to expand beyond the original outfit's boundaries).
+            person_model_id: Optional identifier for pre-cached person models.
 
         Returns:
             PipelineOutput with `images` list containing generated PIL Images.
@@ -255,31 +336,25 @@ class TryOnPipeline:
             torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
 
-        # Pre-resize for pose detection quality
-        person_image = self.pre_resize(person_image, allow_upsampling=False)
-        garment_image = self.pre_resize(garment_image, allow_upsampling=False)
+        # ── 1. Person Model Features (Cached or Computed) ──
+        ca_tensor, person_pose_tensor = self._get_or_compute_person_features(
+            person_image=person_image,
+            category=category,
+            segmentation_free=segmentation_free,
+            num_samples=num_samples,
+            person_model_id=person_model_id,
+        )
 
-        person_image_np = np.array(person_image)
+        # ── 2. Garment Preprocessing ──
+        garment_image = self.pre_resize(garment_image, allow_upsampling=False)
         garment_image_np = np.array(garment_image)
 
-        # Pose detection (DWPose expects BGR)
-        person_pose = self.pose_model(person_image_np[..., ::-1])
         garment_pose = (
             get_dummy_dw_keypoints()
             if garment_photo_type == "flat-lay"
             else self.pose_model(garment_image_np[..., ::-1])
         )
-
-        person_pose_img = draw_pose(person_pose, person_image_np.shape[0], person_image_np.shape[1], grayscale=True)
         garment_pose_img = draw_pose(garment_pose, garment_image_np.shape[0], garment_image_np.shape[1], grayscale=True)
-
-        # Cloth segmentation (U2NET) - replaces the removed fashn-human-parser.
-        # Only run segmentation when actually needed (masking is enabled).
-        if segmentation_free:
-            person_seg_pred = np.zeros(person_image_np.shape[:2], dtype=np.int64)
-        else:
-            self.logger.info("Running cloth segmentation on person image...")
-            person_seg_pred = self.cloth_segmenter.predict(person_image_np)
 
         if garment_photo_type == "flat-lay":
             garment_seg_pred = np.zeros(garment_image_np.shape[:2], dtype=np.int64)
@@ -287,20 +362,9 @@ class TryOnPipeline:
             self.logger.info("Running cloth segmentation on garment image...")
             garment_seg_pred = self.cloth_segmenter.predict(garment_image_np)
 
-        # Get labels to segment based on category
         body_coverage = CATEGORY_TO_BODY_COVERAGE.get(category)
         labels_to_segment = BODY_COVERAGE_TO_FASHN_LABELS.get(body_coverage)
         labels_to_segment_indices = [FASHN_LABELS_TO_IDS[label] for label in labels_to_segment]
-
-        # Create clothing-agnostic and garment images
-        ca_image = create_clothing_agnostic_image(
-            img_np=person_image_np.copy(),
-            seg_pred=person_seg_pred.copy(),
-            labels_to_segment_indices=labels_to_segment_indices.copy(),
-            body_coverage=body_coverage,
-            disable_masking=segmentation_free,
-            logger=self.logger,
-        )
 
         garment_image_processed = create_garment_image(
             img_np=garment_image_np,
@@ -309,36 +373,25 @@ class TryOnPipeline:
             disable_masking=garment_photo_type == "flat-lay",
         )
 
-        # Resize/pad for model input
-        ca_image = self.resize_pad_fn(ca_image, mem_padding=True)
+        # Resize/pad garment
         garment_image_processed = self.resize_pad_fn(garment_image_processed)
-        person_pose_img = self.resize_pad_fn(person_pose_img, interpolation=cv2.INTER_NEAREST_EXACT)
         garment_pose_img = self.resize_pad_fn(garment_pose_img, interpolation=cv2.INTER_NEAREST_EXACT)
 
-        # Prepare tensors
         def prepare_tensor(img: np.ndarray) -> torch.Tensor:
             t = numpy_to_torch(img).unsqueeze(0)
             t = normalize_uint8_to_neg1_1(t)
             t = t.to(self.device).repeat(num_samples, 1, 1, 1)
-            return t
+            return t.to(dtype=self.inference_dtype)
 
-        ca_tensor = prepare_tensor(ca_image)
         garment_tensor = prepare_tensor(garment_image_processed)
-        person_pose_tensor = prepare_tensor(person_pose_img)
         garment_pose_tensor = prepare_tensor(garment_pose_img)
 
         garment_categories = (
             torch.tensor(self.CATEGORY_TO_LABEL[category]).unsqueeze(0).repeat(num_samples).to(self.device)
         )
 
-        # Cast to inference dtype
-        ca_tensor = ca_tensor.to(dtype=self.inference_dtype)
-        garment_tensor = garment_tensor.to(dtype=self.inference_dtype)
-        person_pose_tensor = person_pose_tensor.to(dtype=self.inference_dtype)
-        garment_pose_tensor = garment_pose_tensor.to(dtype=self.inference_dtype)
-
-        # Run sampling
-        self.logger.info(f"Running inference with {num_timesteps} timesteps...")
+        # ── 3. Run sampling ──
+        self.logger.info(f"Running inference with {num_timesteps} timesteps (skip_cfg_last_n_steps={skip_cfg_last_n_steps})...")
         images = self._sample(
             ca_images=ca_tensor,
             garment_images=garment_tensor,

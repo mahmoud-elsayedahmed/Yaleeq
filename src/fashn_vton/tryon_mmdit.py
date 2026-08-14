@@ -32,7 +32,7 @@ def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
 
 def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
     assert dim % 2 == 0
-    scale = torch.arange(0, dim, 2, dtype=torch.float64, device=pos.device) / dim
+    scale = torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device) / dim
     omega = 1.0 / (theta**scale)
     out = torch.einsum("...n,d->...nd", pos, omega)
     out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)
@@ -438,6 +438,7 @@ class TryOnModel(nn.Module):
         )
 
         self.final_layer = LastLayer(hidden_size, out_channels=channels_in * self.patch_size**2)
+        self._pe_cache = {}
 
     # forward with classifier free guidance
 
@@ -474,6 +475,15 @@ class TryOnModel(nn.Module):
         logits, null_logits = all_logits.split(batch_size)
 
         return {"v_c": logits, "v_u": null_logits}
+
+    def forward_conditional_only(self, *args, **kwargs):
+        """Single-pass conditional forward (useful when skipping CFG to save 50% compute)."""
+        kwargs = compact(kwargs)
+        noisy_images = args[0]
+        batch_size = noisy_images.shape[0]
+        mask = torch.ones(batch_size, device=noisy_images.device, dtype=torch.bool)
+        kwargs["mask"] = mask
+        return self.forward(*args, **kwargs)["x"]
 
     def forward(
         self,
@@ -526,8 +536,14 @@ class TryOnModel(nn.Module):
 
         img, txt, vec = x, garment_images, t  # name change for consistency with the original code
 
-        x_pe = self.pe_embedder(x_ids)
-        g_pe = self.pe_embedder(garment_ids)
+        cache_key = (batch_size, str(device), x.dtype)
+        if cache_key in self._pe_cache:
+            x_pe, pe = self._pe_cache[cache_key]
+        else:
+            x_pe = self.pe_embedder(x_ids)
+            g_pe = self.pe_embedder(garment_ids)
+            pe = torch.cat([x_pe, g_pe], dim=2)
+            self._pe_cache[cache_key] = (x_pe, pe)
 
         ###################### PATCH MIXER ######################
 
@@ -536,8 +552,6 @@ class TryOnModel(nn.Module):
                 img = block(img, vec=vec, pe=x_pe)
 
         ###################### CORE MMDiT ########################
-
-        pe = torch.cat([x_pe, g_pe], dim=2)
 
         for block in self.double_blocks:
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe)

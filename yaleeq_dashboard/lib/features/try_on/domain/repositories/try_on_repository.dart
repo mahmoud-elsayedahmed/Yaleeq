@@ -16,9 +16,9 @@ abstract interface class TryOnRepository {
     required String modelId,
     required String category,
     required String garmentImagePath,
-    bool flatLay,
-    int numTimesteps,
-    int seed,
+    bool flatLay = true,
+    int numTimesteps = 15,
+    int seed = 42,
   });
 
   void cancelCurrentGeneration();

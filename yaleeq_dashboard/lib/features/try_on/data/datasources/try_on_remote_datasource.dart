@@ -37,7 +37,7 @@ class TryOnRemoteDataSource {
     required String garmentImagePath,
     required CancelToken cancelToken,
     bool flatLay = true,
-    int numTimesteps = 20,
+    int numTimesteps = 15,
     int seed = 42,
   }) async {
     // Step 1: POST try-on request → JSON response

@@ -102,6 +102,12 @@ async def lifespan(app: FastAPI):
         logger.error("Missing model images:\n" + "\n".join(f"  - {m}" for m in missing))
         raise FileNotFoundError(f"Missing model images: {missing}")
 
+    # Set optimal CPU threading
+    import torch
+    num_threads = os.cpu_count() or 8
+    torch.set_num_threads(num_threads)
+    logger.info(f"Configured PyTorch CPU threads: {num_threads}")
+
     # Load the try-on pipeline
     logger.info("Loading TryOnPipeline... (this may take 30-60 seconds)")
     from fashn_vton import TryOnPipeline
@@ -109,6 +115,17 @@ async def lifespan(app: FastAPI):
     pipeline = TryOnPipeline(weights_dir="./weights")
     pipeline_device = str(pipeline.device)
     logger.info(f"Pipeline loaded on device: {pipeline_device}")
+
+    # Pre-warm person model cache for instant inference on fixed models
+    logger.info("Pre-caching fixed person models...")
+    for mid in list(MODELS.keys()):
+        try:
+            img_path = get_model_image_path(mid)
+            p_img = Image.open(img_path).convert("RGB")
+            pipeline.precompute_model(mid, p_img, MODELS[mid]["supported_categories"])
+        except Exception as e:
+            logger.warning(f"Could not pre-cache model {mid}: {e}")
+    logger.info("Fixed person models cache ready!")
 
     yield  # ← Server is running and accepting requests
 
@@ -368,7 +385,8 @@ async def try_on(
         default=True,
         description="true = garment is a flat-lay/product shot (default), false = garment is worn by a person",
     ),
-    num_timesteps: int = Form(default=20, ge=10, le=50, description="Diffusion steps (20=fast, 30=balanced)"),
+    num_timesteps: int = Form(default=15, ge=5, le=50, description="Diffusion steps (12-15=fast CPU, 20=standard)"),
+    skip_cfg_last_n_steps: int = Form(default=3, ge=0, le=10, description="Skip CFG on final N steps (saves 50% compute on those steps)"),
     seed: int = Form(default=42, description="Random seed for reproducibility"),
 ):
     """Generate a photorealistic try-on image.
@@ -377,7 +395,7 @@ async def try_on(
     The API generates an image of the person wearing the garment, saves it,
     and returns a JSON response with the result URL.
 
-    **Processing time:** ~5-15 minutes on CPU, ~10-30 seconds on GPU.
+    **Processing time:** ~1-3 minutes on CPU with caching & fast steps, ~10-30 seconds on GPU.
 
     Flutter usage:
     ```dart
@@ -389,7 +407,7 @@ async def try_on(
 
     // Optional fields
     request.fields['flat_lay'] = 'true';     // true = product shot, false = worn by model
-    request.fields['num_timesteps'] = '20';
+    request.fields['num_timesteps'] = '15';
     request.fields['seed'] = '42';
 
     // Garment image file
@@ -458,7 +476,7 @@ async def try_on(
     try:
         logger.info(
             f"Starting try-on: model={model_id}, category={category}, "
-            f"flat_lay={flat_lay}, steps={num_timesteps}, seed={seed}"
+            f"flat_lay={flat_lay}, steps={num_timesteps}, skip_cfg_last_n={skip_cfg_last_n_steps}, seed={seed}"
         )
 
         result = pipeline(
@@ -467,8 +485,10 @@ async def try_on(
             category=category,
             garment_photo_type=garment_photo_type,
             num_timesteps=num_timesteps,
+            skip_cfg_last_n_steps=skip_cfg_last_n_steps,
             seed=seed,
             segmentation_free=True,  # Best quality — recommended default
+            person_model_id=model_id,
         )
 
         # Save result image to disk with a unique ID

@@ -51,7 +51,7 @@ class TryOnRepositoryImpl implements TryOnRepository {
     required String category,
     required String garmentImagePath,
     bool flatLay = true,
-    int numTimesteps = 20,
+    int numTimesteps = 15,
     int seed = 42,
   }) async {
     _activeCancelToken = CancelToken();

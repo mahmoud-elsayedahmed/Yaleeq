@@ -102,6 +102,15 @@ async def lifespan(app: FastAPI):
         logger.error("Missing model images:\n" + "\n".join(f"  - {m}" for m in missing))
         raise FileNotFoundError(f"Missing model images: {missing}")
 
+    # Memory allocator status check
+    ld_preload = os.getenv("LD_PRELOAD", "")
+    if "libjemalloc" in ld_preload:
+        logger.info("Memory Allocator: jemalloc (Active via LD_PRELOAD) 🚀")
+    elif "libtcmalloc" in ld_preload:
+        logger.info("Memory Allocator: tcmalloc (Active via LD_PRELOAD) 🚀")
+    else:
+        logger.info("Memory Allocator: system default (Tip: use run_server.sh to enable jemalloc)")
+
     # Set optimal CPU threading
     import torch
     num_threads = os.cpu_count() or 8
@@ -116,7 +125,8 @@ async def lifespan(app: FastAPI):
     pipeline_device = str(pipeline.device)
     logger.info(
         f"Pipeline loaded on device: {pipeline_device} "
-        f"(Channels-Last: {pipeline.use_channels_last}, Compiled: {pipeline.compile_model}, ToMe: {pipeline.tome_ratio})"
+        f"(Channels-Last: {pipeline.use_channels_last}, Compiled: {pipeline.compile_model}, "
+        f"DeepCache: {pipeline.deepcache_interval > 0} [interval={pipeline.deepcache_interval}], ToMe: {pipeline.tome_ratio})"
     )
 
     # Pre-warm person model cache for instant inference on fixed models

@@ -486,6 +486,34 @@ class TryOnModel(nn.Module):
         self._pe_cache = {}
         self.tome_ratio = 0.0
 
+        # DeepCache (Residual Block Caching) state
+        self.deepcache_interval = 0
+        self.deepcache_branch_depth = 4
+        self.current_step = 0
+        self._deepcache_residuals = {}
+
+    def enable_deepcache(self, interval: int = 2, branch_depth: int = 4):
+        """Enable DeepCache (Residual Block Caching) across diffusion steps."""
+        self.deepcache_interval = max(0, int(interval))
+        self.deepcache_branch_depth = max(1, min(len(self.single_blocks) - 1, int(branch_depth)))
+        self._deepcache_residuals.clear()
+        return self
+
+    def disable_deepcache(self):
+        """Disable DeepCache."""
+        self.deepcache_interval = 0
+        self._deepcache_residuals.clear()
+        return self
+
+    def set_step(self, step: int):
+        """Set current diffusion timestep index for DeepCache synchronization."""
+        self.current_step = step
+
+    def reset_deepcache(self):
+        """Clear DeepCache buffer for a new generation run."""
+        self.current_step = 0
+        self._deepcache_residuals.clear()
+
     def enable_tome(self, ratio: float = 0.2):
         """Enable Token Merging (ToMe) with specified merge ratio (0.0 to 0.5)."""
         self.tome_ratio = max(0.0, min(0.5, float(ratio)))
@@ -608,8 +636,34 @@ class TryOnModel(nn.Module):
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
 
         img = torch.cat((txt, img), 1)
-        for block in self.single_blocks:
-            img = block(img, vec=vec, pe=pe)
+
+        # DeepCache (Residual Block Caching) for single blocks
+        use_deepcache = (
+            self.deepcache_interval > 1
+            and len(self.single_blocks) > self.deepcache_branch_depth
+        )
+
+        if use_deepcache:
+            is_cache_step = (self.current_step % self.deepcache_interval != 0) and (self.current_step > 0)
+            cache_key = (img.shape[0], img.shape[1], str(img.device), img.dtype)
+
+            # Execute shallow single blocks
+            for block in self.single_blocks[: self.deepcache_branch_depth]:
+                img = block(img, vec=vec, pe=pe)
+
+            if is_cache_step and cache_key in self._deepcache_residuals:
+                # Reuse cached residual feature delta from previous full step
+                img = img + self._deepcache_residuals[cache_key]
+            else:
+                # Full computation: run deep blocks and record delta residual
+                shallow_out = img
+                for block in self.single_blocks[self.deepcache_branch_depth :]:
+                    img = block(img, vec=vec, pe=pe)
+                self._deepcache_residuals[cache_key] = img - shallow_out
+        else:
+            for block in self.single_blocks:
+                img = block(img, vec=vec, pe=pe)
+
         img = img[:, txt.shape[1] :, ...]
 
         x = self.final_layer(img, vec)

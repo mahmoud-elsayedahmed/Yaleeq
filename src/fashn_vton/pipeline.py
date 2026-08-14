@@ -67,6 +67,8 @@ class TryOnPipeline:
         compile_model: Optional[bool] = None,
         compile_mode: str = "default",
         tome_ratio: Optional[float] = None,
+        deepcache_interval: Optional[int] = None,
+        deepcache_depth: Optional[int] = None,
     ):
         self.weights_dir = os.path.abspath(weights_dir)
         self.logger = logger or setup_logger("TryOnPipeline", level=logging.INFO)
@@ -86,6 +88,28 @@ class TryOnPipeline:
                 self.tome_ratio = 0.0
         else:
             self.tome_ratio = float(tome_ratio)
+
+        # DeepCache configuration (env var FASHN_DEEPCACHE=1 or FASHN_DEEPCACHE_INTERVAL=2)
+        if deepcache_interval is None:
+            env_dc = os.getenv("FASHN_DEEPCACHE_INTERVAL")
+            if env_dc is not None:
+                try:
+                    self.deepcache_interval = int(env_dc)
+                except ValueError:
+                    self.deepcache_interval = 0
+            else:
+                self.deepcache_interval = 2 if os.getenv("FASHN_DEEPCACHE", "0").lower() in ("true", "1", "yes") else 0
+        else:
+            self.deepcache_interval = int(deepcache_interval)
+
+        if deepcache_depth is None:
+            env_depth = os.getenv("FASHN_DEEPCACHE_DEPTH", "4")
+            try:
+                self.deepcache_depth = int(env_depth)
+            except ValueError:
+                self.deepcache_depth = 4
+        else:
+            self.deepcache_depth = int(deepcache_depth)
 
         # Setup device
         self.device = torch.device(device if device else ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -156,6 +180,15 @@ class TryOnPipeline:
         if self.tome_ratio and self.tome_ratio > 0:
             self.logger.info(f"Enabling Token Merging (ToMe) with ratio {self.tome_ratio}")
             self.tryon_model.enable_tome(self.tome_ratio)
+
+        if self.deepcache_interval and self.deepcache_interval > 1:
+            self.logger.info(
+                f"Enabling DeepCache with interval={self.deepcache_interval}, branch_depth={self.deepcache_depth}"
+            )
+            self.tryon_model.enable_deepcache(
+                interval=self.deepcache_interval,
+                branch_depth=self.deepcache_depth,
+            )
 
         if self.compile_model:
             self.logger.info(f"Compiling TryOnModel with torch.compile (mode='{self.compile_mode}', backend='inductor')...")
@@ -314,6 +347,9 @@ class TryOnPipeline:
             "garment_categories": garment_categories,
         }
 
+        # Reset DeepCache buffer for a new generation run
+        self.tryon_model.reset_deepcache()
+
         # Euler sampling loop
         for step_idx, (t_curr, t_prev) in enumerate(
             tqdm(
@@ -323,6 +359,7 @@ class TryOnPipeline:
                 disable=not use_tqdm,
             )
         ):
+            self.tryon_model.set_step(step_idx)
             dt = t_prev - t_curr
             t_vec = torch.full((batch_size,), t_curr, dtype=dtype, device=device)
 
